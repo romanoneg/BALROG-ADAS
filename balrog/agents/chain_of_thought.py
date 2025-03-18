@@ -43,7 +43,7 @@ Finally, provide a single output action at the end of the message in the form of
         """.strip()
 
         messages[-1].content += "\n\n" + cot_instructions
-
+            
         # Generate the CoT reasoning
         cot_reasoning = self.client.generate(messages)
 
