@@ -53,7 +53,7 @@ def main(config: DictConfig):
 
     # Create an EvaluatorManager and run evaluation
     evaluator_manager = EvaluatorManager(config, original_cwd=original_cwd, output_dir=output_dir)
-    agent_factory = AgentFactory(config)
+    agent_factory = AgentFactory(config, output_dir=output_dir) # NOTE: output_dir used for ADAS agent location
     with redirect_to_file(log_filename):
         evaluator_manager.run(agent_factory)
 

@@ -8,7 +8,7 @@ from .few_shot import FewShotAgent
 from .naive import NaiveAgent
 from .robust_naive import RobustNaiveAgent
 from .robust_cot import RobustCoTAgent
-
+from .adas import AdasAgent
 
 class AgentFactory:
     """Factory class for creating agents based on configuration.
@@ -18,20 +18,25 @@ class AgentFactory:
     prompt builder.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, output_dir="."):
         """Initialize the AgentFactory with configuration settings.
 
         Args:
             config (omegaconf.DictConfig): Configuration object containing settings for the agent and client.
         """
         self.config = config
+        self.output_dir = output_dir
 
-    def create_agent(self):
+    def create_agent(self, env_name=None):
         """Create an agent instance based on the agent type specified in the configuration.
 
         The function uses the `config.agent.type` attribute to determine which agent to create.
         It supports several agent types, including Naive, Chain-of-Thought, Self-Refine, Dummy,
         and Custom agents.
+
+        Args:
+            env_name: Used to select corresponding agent for enviornment in ADAS mode. Does not affect
+                      other agent types.
 
         Returns:
             Agent: An instance of the selected agent type, configured with the client and prompt builder.
@@ -56,6 +61,9 @@ class AgentFactory:
             return RobustNaiveAgent(client_factory, prompt_builder)
         elif self.config.agent.type == "robust_cot":
             return RobustCoTAgent(client_factory, prompt_builder, config=self.config)
+        elif self.config.agent.type == "adas":
+            return AdasAgent(client_factory, prompt_builder, env_name=env_name, 
+                             output_dir=self.output_dir, config=self.config)
 
         else:
             raise ValueError(f"Unknown agent type: {self.config.agent}")

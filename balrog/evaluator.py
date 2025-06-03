@@ -91,7 +91,7 @@ class EvaluatorManager:
         with tqdm(total=total_episodes, desc="Evaluating Episodes", position=0) as pbar:
             for env_name, task, episode_idx in self.tasks:
                 evaluator = self.env_evaluators[env_name]
-                agent = agent_factory.create_agent()
+                agent = agent_factory.create_agent(env_name) # the env_name argument is only used for ADAS agents
                 episode_log = evaluator.run_episode(task, agent, position=1, episode_idx=episode_idx)
                 results[env_name].append(episode_log)
                 pbar.update(1)
@@ -181,7 +181,6 @@ class EvaluatorManager:
         random.seed(seed)
         np.random.seed(seed)
 
-        agent = agent_factory.create_agent()
         process_num = multiprocessing.current_process().name
         while True:
             item = task_queue.get()
@@ -190,6 +189,7 @@ class EvaluatorManager:
             try:
                 env_name, task, episode_idx = item
                 evaluator = self.env_evaluators[env_name]
+                agent = agent_factory.create_agent(env_name) # NOTE: moved into the while, env_name only used for ADAS agents
                 result = evaluator.run_episode(
                     task,
                     agent,
