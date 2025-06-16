@@ -218,7 +218,7 @@ class OpenAIWrapper(LLMClientWrapper):
 class GoogleGenerativeAIWrapper(LLMClientWrapper):
     """Wrapper for interacting with Google's Generative AI API."""
 
-    def __init__(self, client_config):
+    def __init__(self, client_config, json_structure=False):
         """Initialize the GoogleGenerativeAIWrapper with the given configuration.
 
         Args:
@@ -226,6 +226,7 @@ class GoogleGenerativeAIWrapper(LLMClientWrapper):
         """
         super().__init__(client_config)
         self._initialized = False
+        self.structure = {'response_mime_type':'application/json'} if json_structure else {}
 
     def _initialize_client(self):
         """Initialize the Generative AI client if not already initialized."""
@@ -242,7 +243,7 @@ class GoogleGenerativeAIWrapper(LLMClientWrapper):
             if temperature is not None:
                 client_kwargs["temperature"] = temperature
 
-            self.generation_config = genai.types.GenerationConfig(**client_kwargs)
+            self.generation_config = genai.types.GenerationConfig(**(client_kwargs | self.structure))
             self._initialized = True
 
     def convert_messages(self, messages):

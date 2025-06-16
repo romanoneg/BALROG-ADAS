@@ -56,7 +56,7 @@ def main(config: DictConfig):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Setup logger
-    log_filename = os.path.join(output_dir, "eval.log")
+    log_filename = os.path.join(output_dir, "adas_eval.log")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",

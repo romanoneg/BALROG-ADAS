@@ -91,7 +91,7 @@ class EvaluatorManager:
         with tqdm(total=total_episodes, desc="Evaluating Episodes", position=0) as pbar:
             for env_name, task, episode_idx in self.tasks:
                 evaluator = self.env_evaluators[env_name]
-                agent = agent_factory.create_agent()
+                agent = agent_factory.create_agent(env_name)
                 episode_log = evaluator.run_episode(task, agent, position=1, episode_idx=episode_idx)
                 results[env_name].append(episode_log)
                 pbar.update(1)
@@ -111,6 +111,10 @@ class EvaluatorManager:
 
         ctx = multiprocessing.get_context("fork")
 
+        # get locks for each env
+        unique_envs = set([env_name for env_name, _, _ in self.tasks])
+        env_locks = {env_name : multiprocessing.RLock() for env_name in unique_envs}
+
         # Initially fill the task queue with tasks up to the number of workers
         for item in self.tasks[: self.num_workers]:
             task_queue.put(item)
@@ -126,7 +130,7 @@ class EvaluatorManager:
             position = positions[idx]
             p = ctx.Process(
                 target=self._worker,
-                args=(task_queue, results_queue, agent_factory, position),
+                args=(task_queue, results_queue, agent_factory, position, env_locks),
             )
             processes.append(p)
             p.start()
@@ -168,7 +172,7 @@ class EvaluatorManager:
 
         return results
 
-    def _worker(self, task_queue, results_queue, agent_factory, position):
+    def _worker(self, task_queue, results_queue, agent_factory, position, env_locks):
         """Worker process for parallel evaluation.
 
         Args:
@@ -181,7 +185,6 @@ class EvaluatorManager:
         random.seed(seed)
         np.random.seed(seed)
 
-        agent = agent_factory.create_agent()
         process_num = multiprocessing.current_process().name
         while True:
             item = task_queue.get()
@@ -190,6 +193,7 @@ class EvaluatorManager:
             try:
                 env_name, task, episode_idx = item
                 evaluator = self.env_evaluators[env_name]
+                agent = agent_factory.create_agent(env_name, env_locks[env_name])
                 result = evaluator.run_episode(
                     task,
                     agent,
@@ -307,6 +311,7 @@ class Evaluator:
             action = None
             for step in range(max_steps_per_episode):
                 response = agent.act(obs, prev_action=action)
+                print("Response: ", response)
                 action = env.check_action_validity(response.completion)
                 reasoning = response.reasoning if hasattr(response, "reasoning") else ""
 

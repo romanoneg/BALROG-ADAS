@@ -98,17 +98,19 @@ error_prompt = lambda x: f"""
     “thought”, and put your thinking for debugging in “debug thought”.
     """
 
+# - DO NOT import libraries at the top of the block of code, add your imports INSIDE of the class!
 # TODO:
 wrong_impl = """
     ## WRONG Implementation examples:
     - Not utilizing the prompt_builder to expand context.
     - Not making sure all output is in the form of a valid json.    
     - Importing outside Libraries -> you must only use base python.
-    - DO NOT import libraries at the top of the block of code, add your imports INSIDE of the class!
     - Trying to add arguments to the class, the ONLY arguments passed to init are ONLY: client_factory and prompt_builder! NO CONFIG!
-    - trying to import LLMResponse, it is already imported in the scope!
+    - trying to import/define LLMResponse or Message, they have already been imported in the scope!
     - BY FAR the most common wrong implementation and the most important to get right is that your act method MUST output a LLMResponseobject that has ONLY the valid action in the "completion" field and ONLY the action!!
     - quotes within strings should be backslashed in order to keep correct string format.
+    - your class name in the 'code' field must be the same (case sensitive) as the 'name' field
+    - Make sure your output has ALL NECESSARY parts of the required JSON at every point, it should always include a 'code' field!
     """.strip()
 
 

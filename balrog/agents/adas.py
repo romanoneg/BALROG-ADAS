@@ -1,7 +1,7 @@
 import os
 import json
-import json5
 import ast
+import logging
 import types
 import contextlib
 from contextlib import contextmanager
@@ -10,18 +10,27 @@ from balrog.client import LLMResponse
 from collections import namedtuple
 from balrog.client import LLMClientWrapper
 from functools import wraps
+import sys
 
 from . import adas_prompts
+import traceback
 
 from ..prompt_builder.history import Message 
 
+httpx_logger = logging.getLogger("httpx")
+httpx_logger.setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 class AdasAgent(BaseAgent):
 
     def __init__(self, client_factory, prompt_builder, env_name, lock, output_dir, eval_mode, config):
         super().__init__(client_factory, prompt_builder)
 
+        self.config = config
         self.client_factory = client_factory
+        # Create client with json structure output turned on
+        self.meta_client = type(self.client)(self.config.client, json_structure=True) 
+        # self.meta_client = self.client
         self.prompt_builder = prompt_builder
         self.meta_prompt_builder = [Message(role="system", 
                                             content="You are a helpful assistant. Make sure to return in a WELL-FORMED JSON object.")] 
@@ -29,7 +38,6 @@ class AdasAgent(BaseAgent):
         self.lock = lock if lock else contextlib.nullcontext()
         self.output_dir = output_dir
         self.eval_mode = eval_mode
-        self.config = config
         self.error_budget = config.adas.error_budget
         self.archive_path = os.path.join(self.output_dir, 
                                          config.adas.agents_archive, 
@@ -46,14 +54,19 @@ class AdasAgent(BaseAgent):
         def subject_function(self, candidate_agent):
             while self.error_budget > 0:
                 try:
+                    logger.info("Inside of catch_llm_error, budget left: " + str(self.error_budget))
                     return func(self, candidate_agent), candidate_agent
                 except Exception as e:
+                    error_traceback = traceback.format_exc()
+                    current_directory = os.getcwd()
+                    anonymized_traceback = error_traceback.replace(current_directory + os.path.sep, './')
+                    anonymized_traceback = anonymized_traceback.replace(current_directory, '.')
                     print("--------------------------------")
-                    print("with LLM output: \n", candidate_agent, "\n\n Ran into error: \n", e)
+                    print("with LLM output: \n", candidate_agent, "\n\n Ran into error: \n", anonymized_traceback)
                     print("--------------------------------")
                     with self.lock:
                         self.error_budget -= 1
-                        candidate_agent, self.meta_prompt_builder = _error_reflect(self.client, self.meta_prompt_builder, candidate_agent, e)
+                        candidate_agent, self.meta_prompt_builder = _error_reflect(self.meta_client, self.meta_prompt_builder, candidate_agent, anonymized_traceback)
             raise RuntimeError("Ran out of error budget")
         return subject_function
 
@@ -77,29 +90,32 @@ class AdasAgent(BaseAgent):
                 self.archive = _extract_agents(self.archive_path, self.lock)        
 
                 # If the archive_path does not exist (not agents generated yet) generate agent
-                candidate_agent, self.meta_prompt_builder = _generate_agent(self.client,
+                candidate_agent, self.meta_prompt_builder = _generate_agent(self.meta_client,
                                                                             self.meta_prompt_builder,
                                                                             self.prompt_builder.system_prompt, 
                                                                             init_obs,
                                                                             self.archive + self.base_agents)
-                candidate_agent, self.meta_prompt_builder = _self_reflection_one(self.client, self.meta_prompt_builder, candidate_agent)
-                candidate_agent, self.meta_prompt_builder = _self_reflection_two(self.client, self.meta_prompt_builder, candidate_agent)
+                candidate_agent, self.meta_prompt_builder = _self_reflection_one(self.meta_client, self.meta_prompt_builder, candidate_agent)
+                candidate_agent, self.meta_prompt_builder = _self_reflection_two(self.meta_client, self.meta_prompt_builder, candidate_agent)
 
                 self.agent_code, _ = self.load_json(candidate_agent)
                 self.agent, self.agent_code = self.exec_agent(self.agent_code)
-                self.save_agent_to_file()
+                self.save_agent_to_file(self.agent_code)
     
     @catch_llm_error
     def exec_agent(self, agent_code):
-        # staging_namespace = {}
-        exec(agent_code['code'])
-        new_class_name = agent_code['code'].split("\nclass ")[1].split("(")[0].strip()
-        # return staging_namespace[new_class_name](self.client_factory, self.prompt_builder), agent_code
-        return locals()[new_class_name](self.client_factory, self.prompt_builder)
+        logger.info("Inside of exec_agent")
+        staging_namespace = {}
+        agent_code, _ = self.load_json(agent_code) if isinstance(agent_code, str) else (agent_code, 0) 
+        exec(agent_code['code'], globals(), staging_namespace)
+        new_class_name = agent_code['name']
+        globals().update(staging_namespace) # merge namespaces to allow for imports
+        return staging_namespace[new_class_name](self.client_factory, self.prompt_builder)
 
     @catch_llm_error
     def load_json(self, json_string):
-        json_string = json_string[json_string.index('{'):json_string.rindex('}')+1]
+        logger.info("Inside of load_json...")
+        # json_string = json_string[json_string.index('{'):json_string.rindex('}')+1]
         return ast.literal_eval(json_string)
 
     def load_agent_from_file(self):
@@ -107,8 +123,12 @@ class AdasAgent(BaseAgent):
            return json.load(f)
 
     def save_agent_to_file(self, agent_code):
-        with self.lock, open(os.path.join(self.archive_path, "current_agent.json"), "w+") as f:
-            json.dump(agent_code, f) 
+        logger.info("inside of save_agent_to_file...")
+        with self.lock:
+            os.makedirs(self.archive_path, exist_ok=True)
+            with open(os.path.join(self.archive_path, "current_agent.json"), "w+") as f:
+                json.dump(agent_code, f) 
+        logger.info("finished saving agent to file")
 
     def act(self, obs, prev_action=None):
         # initialize agent if agent doesn't exist yet
@@ -124,13 +144,31 @@ class AdasAgent(BaseAgent):
         else:
             # first, reflect on if past agent had errors
             if "Your previous output did not contain a valid action." in obs['text']:
-                source_code, self.meta_prompt_builder = _error_reflect(self.client, self.meta_prompt_builder, 
+                print("Failed to get valid action")
+                print("Obs: \n", obs)
+                source_code, self.meta_prompt_builder = _error_reflect(self.meta_client, self.meta_prompt_builder, 
                                                                      self.agent_code, "Your previous output did not contain a valid action.") 
                 self.agent_code, _ = self.load_json(source_code)
             else:
+                print("didn't find error, here is the obs: ", obs)
                 self.agent_code = self.load_agent_from_file()
             self.agent, self.agent_code = self.exec_agent(self.agent_code)
-            return self.agent.act(obs, prev_action)
+            self.save_agent_to_file(self.agent_code)
+            while self.error_budget > 0:
+                try:
+                    return self.agent.act(obs, prev_action)
+                except Exception as e: 
+                    self.error_budget -= 1
+                    error_traceback = traceback.format_exc()
+                    current_directory = os.getcwd()
+                    anonymized_traceback = error_traceback.replace(current_directory + os.path.sep, './')
+                    anonymized_traceback = anonymized_traceback.replace(current_directory, '.')
+                    source_code, self.meta_prompt_builder = _error_reflect(self.meta_client, self.meta_prompt_builder,
+                                                                           self.agent_code, anonymized_traceback)
+                    self.agent_code, _ = self.load_json(source_code)
+                    self.agent, self.agent_code = self.exec_agent(self.agent_code)
+                    self.save_agent_to_file(self.agent_code)
+            raise RuntimeError("Ran out of error budget in act")
 
 
 def _extract_agents(agent_dir, lock=contextlib.nullcontext()):
@@ -139,9 +177,10 @@ def _extract_agents(agent_dir, lock=contextlib.nullcontext()):
         return [] 
     with lock:
         return [json.load(open(os.path.join(agent_dir, agent_path), "r")) 
-                for agent_path in os.listdir(agent_dir)]
+                for agent_path in os.listdir(agent_dir) if agent_path[-5:] == ".json"]
 
 def _generate_agent(client, meta_prompt_builder, system_prompt, init_obs, archive):
+    logger.info("Inside of _generate_agent...")
     full_prompt = Message(role="user", content=
                                         adas_prompts.prompt_instruction 
                                 + "\n" + system_prompt 
@@ -154,41 +193,56 @@ def _generate_agent(client, meta_prompt_builder, system_prompt, init_obs, archiv
                                 + "\n\n" + adas_prompts.wrong_impl)
     meta_prompt_builder += [full_prompt]
     new_agent = client.generate(meta_prompt_builder)
+    logger.info("Generated:")
+    logger.info(new_agent.completion)
+    logger.info("-----------------------------")
     return new_agent.completion, meta_prompt_builder
 
 def _self_reflection_one(client, meta_prompt_builder, agent):
+    logger.info("Inside of _self_reflection_one...")
     reflect_prompt = adas_prompts.reflection_one
     reflect_message = Message(role="user", content=str(agent) + "\n" + reflect_prompt)
     meta_prompt_builder += [reflect_message]
     new_agent = client.generate(meta_prompt_builder)
+    logger.info("Generated:")
+    logger.info(new_agent.completion)
+    logger.info("----------------------------")
     return new_agent.completion, meta_prompt_builder
 
 def _self_reflection_two(client, meta_prompt_builder, agent):
+    logger.info("Inside of _self_reflection_two...")
     reflect_prompt = adas_prompts.reflection_two
     reflect_message = Message(role="user", content=str(agent) + "\n" + reflect_prompt)
     meta_prompt_builder += [reflect_message]
     new_agent = client.generate(meta_prompt_builder)
+    logger.info("Generated:")
+    logger.info(new_agent.completion)
+    logger.info("---------------------------")
     return new_agent.completion, meta_prompt_builder
 
 def _error_reflect(client, meta_prompt_builder, agent, error):
+    logger.info("Inside of _error_reflect...")
     error_prompt = adas_prompts.error_prompt(error)
     error_message = Message(role="user", content=str(agent) + "\n" + error_prompt)
     meta_prompt_builder += [error_message]
-    new_agent = client.generate(meta_prompt_builder).completion
-    return new_agent, meta_prompt_builder
+    new_agent = client.generate(meta_prompt_builder)
+    logger.info("Generated:")
+    logger.info(new_agent.completion)
+    logger.info("--------------------------")
+    return new_agent.completion, meta_prompt_builder
 
 
 """
 Need to:
     - [?] make sure eval.py works with current format
     - [X] modify this file to do everything but with locks (if a lock is given meaning multithreading)
-    - [ ] wrong impl list
+    - [X] wrong impl list
     - [X] modify the __init__.py to pass locks and env_name
     - [X] modify the evaluator file to pass locks and env_name
     - [X] modify the config to have all the information about where to put agents, what to run when in 'training' mode (determined by generating_adas.py not config)
     - [X] create util function that modifies the config per adas episode
     - [ ] create util function that saves the agents
     - [ ] write generate_adas.py file to create the agents
-    - [ ] implement base agents function
+    - [X] implement base agents function
 """
 
